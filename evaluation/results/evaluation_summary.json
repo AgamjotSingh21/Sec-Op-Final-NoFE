@@ -1,0 +1,114 @@
+{
+  "total_cases": 100,
+  "correct_cases": 33,
+  "incorrect_cases": 67,
+  "accuracy": 0.33,
+  "average_confidence": 79.4,
+  "average_confidence_when_correct": 79.24,
+  "average_confidence_when_incorrect": 79.48,
+  "average_runtime_seconds": 159.403,
+  "total_evaluation_runtime_seconds": 15940.324,
+  "per_class": {
+    "GO": {
+      "precision": 0.0,
+      "recall": 0.0,
+      "f1_score": 0.0,
+      "support": 34
+    },
+    "CONDITIONAL GO": {
+      "precision": 0.33,
+      "recall": 1.0,
+      "f1_score": 0.4962,
+      "support": 33
+    },
+    "NO-GO": {
+      "precision": 0.0,
+      "recall": 0.0,
+      "f1_score": 0.0,
+      "support": 33
+    }
+  },
+  "macro_precision": 0.11,
+  "macro_recall": 0.3333,
+  "macro_f1": 0.1654,
+  "weighted_precision": 0.1089,
+  "weighted_recall": 0.33,
+  "weighted_f1": 0.1638,
+  "confusion_matrix": {
+    "GO": {
+      "CONDITIONAL GO": 34
+    },
+    "CONDITIONAL GO": {
+      "CONDITIONAL GO": 33
+    },
+    "NO-GO": {
+      "CONDITIONAL GO": 33
+    }
+  },
+  "brier_score": 0.4384,
+  "ece": 0.464,
+  "calibration_cases": 100,
+  "ece_bins": 10,
+  "calibration_bin_details": [
+    {
+      "range": "0.0-0.1",
+      "count": 0,
+      "average_confidence": null,
+      "accuracy": null
+    },
+    {
+      "range": "0.1-0.2",
+      "count": 0,
+      "average_confidence": null,
+      "accuracy": null
+    },
+    {
+      "range": "0.2-0.3",
+      "count": 0,
+      "average_confidence": null,
+      "accuracy": null
+    },
+    {
+      "range": "0.3-0.4",
+      "count": 0,
+      "average_confidence": null,
+      "accuracy": null
+    },
+    {
+      "range": "0.4-0.5",
+      "count": 0,
+      "average_confidence": null,
+      "accuracy": null
+    },
+    {
+      "range": "0.5-0.6",
+      "count": 0,
+      "average_confidence": null,
+      "accuracy": null
+    },
+    {
+      "range": "0.6-0.7",
+      "count": 1,
+      "average_confidence": 0.6,
+      "accuracy": 0.0
+    },
+    {
+      "range": "0.7-0.8",
+      "count": 6,
+      "average_confidence": 0.7083,
+      "accuracy": 0.5
+    },
+    {
+      "range": "0.8-0.9",
+      "count": 93,
+      "average_confidence": 0.8016,
+      "accuracy": 0.3226
+    },
+    {
+      "range": "0.9-1.0",
+      "count": 0,
+      "average_confidence": null,
+      "accuracy": null
+    }
+  ]
+}

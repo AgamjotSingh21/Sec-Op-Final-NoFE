@@ -76,7 +76,7 @@ cd SecondOpinion-LangG
 ```bash
 # Windows (PowerShell)
 python -m venv venv
-.\venv\Scripts\Activate.ps1
+venv\Scripts\activate
 
 # Linux / macOS
 python3 -m venv venv
@@ -85,7 +85,7 @@ source venv/bin/activate
 
 ### 3. Install dependencies
 ```bash
-pip install -r requirements.txt
+python -m pip install -r requirements.txt
 ```
 
 ### 4. Setup and start Ollama
@@ -115,57 +115,217 @@ python main.py
 
 ---
 
-## 📊 Evaluation & Benchmarking
+## Model Evaluation
 
-The project includes an evaluation suite (`evaluate_model.py`) to benchmark the decision model against historical entrepreneurial decisions.
+### 1. Overview
 
-### 1. Prepare Evaluation Split
-Create a holdout evaluation dataset and a training knowledge base split:
-```bash
+SecondOpinion is evaluated using a held-out dataset of 100 entrepreneurial decision cases. The original dataset contains 5,000 records, divided into:
+
+- **Knowledge Base:** 4,900 records used for retrieval during evaluation.
+- **Evaluation Set:** 100 records used to test the system's recommendations.
+
+The evaluation records are excluded from the evaluation knowledge base to reduce direct retrieval of test cases. Each evaluation case is passed through the complete SecondOpinion multi-agent pipeline, and the final Judge verdict is compared with the expected verdict derived from the historical outcome.
+
+### 2. Evaluation Labels
+
+Historical outcomes are mapped to recommendation labels as follows:
+
+| Historical Outcome | Expected Verdict |
+|---|---|
+| Success | GO |
+| Partial Success | CONDITIONAL GO |
+| Failure | NO-GO |
+
+These labels provide a reference for measuring agreement with historical outcomes. They are proxies, not definitive ground truth for the quality of a business decision or the future success of a startup.
+
+### 3. Prepare the Evaluation Dataset
+
+Run the following command from the project root with the virtual environment activated:
+
+```powershell
 python evaluate_model.py prepare --source knowledge_base/entrepreneurial_decisions.json --eval-size 100
 ```
 
-### 2. Build Evaluation Vector Database (No-Leakage)
-```bash
-# PowerShell
+This creates the evaluation split:
+
+- `evaluation/knowledge_base_train/train_decisions.json`
+- `evaluation/eval_cases.json`
+
+The split uses a fixed random seed to make the preparation reproducible.
+
+### 4. Build a Separate Evaluation Vector Database
+
+Use a separate ChromaDB directory so that the original knowledge base is not overwritten.
+
+Run these commands in the same PowerShell terminal:
+
+```powershell
 $env:KNOWLEDGE_BASE_DIR="evaluation/knowledge_base_train"
 $env:CHROMA_DB_PATH="./chroma_db_eval"
 python build_db.py
-
-# Bash (Linux/macOS)
-KNOWLEDGE_BASE_DIR="evaluation/knowledge_base_train" CHROMA_DB_PATH="./chroma_db_eval" python build_db.py
 ```
 
-### 3. Run Benchmark
-```bash
-# PowerShell
-$env:CHROMA_DB_PATH="./chroma_db_eval"
-python evaluate_model.py run --eval-cases evaluation/eval_cases.json --limit 50
+The script builds the evaluation knowledge base using the 4,900 training records. The 100 evaluation cases are kept separate.
 
-# Bash (Linux/macOS)
-CHROMA_DB_PATH="./chroma_db_eval" python evaluate_model.py run --eval-cases evaluation/eval_cases.json --limit 50
+**Important:** Do not set `CHROMA_DB_PATH` to the original `./chroma_db` when rebuilding the database, because the build script resets its collection.
+
+### Activating the Virtual Environment in PowerShell (In Case of Error)
+
+If PowerShell displays an error stating that running scripts is disabled when activating the virtual environment, follow these steps.
+
+**Step 1: Allow scripts for the current terminal session only**
+
+```powershell
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 ```
 
-Evaluation outputs are saved to `evaluation/results/`:
-- `evaluation_summary.json` (Accuracy, Average Confidence, Confusion Matrix)
-- `evaluation_results.csv` (Per-case breakdown of expected vs. predicted verdicts)
-- `evaluation_results.json` (Full traces and model answers)
+This change applies only to the current PowerShell session and does not permanently change the system-wide execution policy.
 
----
+**Step 2: Activate the virtual environment**
+
+From the project root directory, run:
+
+```powershell
+venv\Scripts\activate
+```
+
+Once activated, `(venv)` should appear at the beginning of the terminal prompt.
+
+**Alternative: Use Command Prompt (CMD)**
+
+If you prefer not to change the PowerShell execution policy, open a CMD terminal in VS Code and run:
+
+```cmd
+venv\Scripts\activate.bat
+```
+
+**Note:** If the virtual environment is located in a different directory, adjust the activation path accordingly.
+
+### 5. Run the Evaluation
+
+First, test a small number of cases:
+
+```powershell
+python evaluate_model.py run --eval-cases evaluation/eval_cases.json --limit 3
+```
+
+After verifying that the pipeline works, run all 100 cases:
+
+```powershell
+python evaluate_model.py run --eval-cases evaluation/eval_cases.json --limit 100
+```
+
+Keep the same terminal session open so that the evaluation environment variables remain set. The full run may take several hours because each case requires multiple agent and LLM calls.
+
+### 6. Evaluation Metrics
+
+The evaluation script calculates the following metrics:
+
+- **Accuracy:** Proportion of cases where the predicted verdict matches the expected verdict.
+- **Per-class Precision:** Proportion of predictions for a verdict class that are correct.
+- **Per-class Recall:** Proportion of actual cases of a verdict class that are identified correctly.
+- **Per-class F1-score:** Harmonic mean of precision and recall for each verdict class.
+- **Macro F1-score:** Average F1-score across the three verdict classes, treating each class equally.
+- **Weighted F1-score:** Average F1-score weighted by the number of actual cases in each class.
+- **Confusion Matrix:** Shows the distribution of actual versus predicted verdicts.
+- **Average Confidence:** Mean confidence reported by the Judge across evaluation cases.
+- **Confidence by Correctness:** Compares average reported confidence for correct and incorrect predictions.
+- **Brier Score:** Measures the squared error between reported confidence and binary correctness, where correctness is represented as 1 and incorrectness as 0. Lower values are better.
+- **Expected Calibration Error (ECE):** Measures the weighted difference between reported confidence and observed correctness across confidence bins. Lower values indicate better calibration.
+- **Average Runtime per Case:** Mean time taken to evaluate a single case.
+- **Total Evaluation Runtime:** Total time recorded for the evaluation run.
+
+The Brier Score and ECE are calculated against binary correctness, not the probability that a startup will succeed. They measure whether the Judge's reported confidence corresponds to the correctness of its mapped verdict.
+
+### 7. Evaluation Outputs
+
+The script saves results under `evaluation/results/`:
+
+- `evaluation_results.csv` — case-level evaluation results.
+- `evaluation_results.json` — detailed results in JSON format.
+- `evaluation_summary.json` — aggregate metrics, per-class metrics, confusion matrix, and calibration information.
+
+Check that `total_cases` in the summary JSON is 100 after the full run.
+
+### 8. Generate Evaluation Visualizations
+
+Run the plotting script from the project root:
+
+```powershell
+python plot_results.py
+```
+
+The script reads `evaluation/results/evaluation_summary.json` and, where applicable, `evaluation/results/evaluation_results.csv`. It saves the following figures under `evaluation/results/plots/`:
+
+- `confusion_matrix.png`
+- `classification_metrics.png`
+- `calibration_plot.png`
+- `runtime.png`
+
+Run this command again after completing the full evaluation to generate figures from the 100-case results.
+
+### 9. Qualitative Contextual-Relevance Analysis
+
+In addition to numerical metrics, manually examine representative outputs from six business domains:
+
+1. Food and Restaurants
+2. EdTech
+3. Finance
+4. Agriculture
+5. Retail
+6. Healthcare
+
+Assess whether the system uses relevant retrieved evidence, identifies important risks and blind spots, considers the business context, and provides a practical recommendation. Record representative examples and limitations using the actual model outputs.
+
+This qualitative analysis is reported separately from the coded benchmark metrics.
+
+### 10. Evaluation Limitations
+
+The benchmark measures agreement with verdict labels derived from historical outcomes. Historical business success or failure may depend on factors that are not
+
 
 ## 📋 Verdict Output Format
 
-The Judge Agent delivers a structured verdict formatted as:
+The Judge Agent delivers a structured verdict in the following format:
+
 ```text
 ============================================================
 JUDGE AGENT — FINAL VERDICT
 ============================================================
-VERDICT: [GO / NO-GO / CONDITIONAL GO]
+
+VERDICT: [GO / CONDITIONAL GO / NO-GO]
 CONFIDENCE: [0-100]%
 
+1. EXECUTIVE SUMMARY
+Brief summary of the final decision and its main reasoning.
+
+2. KEY FINDINGS
+Main supporting arguments, opposing arguments, and relevant evidence
+identified during the debate.
+
+3. BLIND SPOTS ADDRESSED
+Important risks, missing information, and uncertainties identified
+by the Questioner Agent and considered in the second debate round.
+
+4. RISK ASSESSMENT
+Major risks, their potential impact, and practical mitigation measures.
+
+5. RECOMMENDED ACTIONS
+Concrete next steps, including low-cost validation tests where applicable.
+
+6. SUCCESS CRITERIA
+Measurable conditions that should be met before proceeding or expanding.
+
+7. FINAL JUSTIFICATION
+Explanation of why the selected verdict is appropriate given the
+available evidence, business context, and constraints.
 
 ============================================================
+END OF FINAL VERDICT
+============================================================
 ```
+
+Confidence represents the Judge Agent's self-reported confidence in its recommendation, not a calibrated probability of business success.
 
 ---
 

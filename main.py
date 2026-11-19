@@ -159,6 +159,13 @@ def run_second_opinion(question):
     return result["verdict"]
 
 
+    
 if __name__ == "__main__":
-    question = input("Enter your decision question: ")
-    run_second_opinion(question)
+    print("Enter your decision question. Press Enter, then Ctrl+Z and Enter to submit:")
+    question = ""
+    while True:
+        try:
+            question += input() + "\n"
+        except EOFError:
+            break
+    run_second_opinion(question.strip())

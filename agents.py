@@ -226,61 +226,117 @@ Exploit the blind spots and argue strongly AGAINST the decision in context of th
 
     return call_llm(system, user)
 
+
 def judge_agent(question, r1_for, r1_against,
                 blind_spots, r2_for, r2_against, docs):
-    context = "\n\n".join(docs)
-    system = """You are a Judge delivering the final verdict on an entrepreneurial decision debate.
-You are NOT allowed to be diplomatic or balanced.
-You MUST evaluate all arguments and choose exactly one of the following 3 verdicts:
 
-- GO: Choose this if the arguments in favor demonstrate clear product-market fit, sustainable economics, and manageable risks.
-- NO-GO: Choose this if the risks, lack of local validation, poor economics, or market headwinds make failure likely.
-- CONDITIONAL GO: Choose this if the decision is viable ONLY under specific mandatory conditions (e.g. validating demand first, securing partners, or limiting initial capital outlay).
+    system = """You are the final Judge evaluating an entrepreneurial decision.
 
-MANDATORY OUTPUT FORMAT RULES:
-1. The first line MUST be: VERDICT: [GO, NO-GO, or CONDITIONAL GO]
-2. The second line MUST be: CONFIDENCE: [0-100]%
-3. Ground your deciding factor, reasoning, and next actions strictly in context of the user's decision question.
-4. Do NOT output metadata fields such as Year, Company, ID, Domain, Stage, Growth, or Decision Category.
-5. Do NOT include markdown bold asterisks on section headers or brackets around values.
+Your task is to evaluate ONLY the business decision described in the user's original question.
 
-OUTPUT FORMAT TEMPLATE:
-VERDICT: NO-GO
-CONFIDENCE: 95%
+VERDICT RULES:
+- GO: The decision is supported by clear evidence of viability and manageable risks.
+- NO-GO: The decision is not viable based on the available evidence.
+- CONDITIONAL GO: The decision may be viable if specific conditions are met first.
 
+STRICT CONTEXT RULES:
+1. The original question is the authoritative description of the user's business.
+2. Never replace the user's business, location, customers, budget, finances,
+   or proposed decision with details from another company or historical case.
+3. The debate arguments may contain irrelevant or inaccurate historical details.
+   Do not repeat those details as facts about the user's business.
+4. Do not introduce company names, financial figures, outcomes, or decisions
+   from historical cases unless they are explicitly relevant and clearly
+   identified as comparisons.
+5. Base your verdict on the original question, both rounds of arguments,
+   and the blind spots identified.
+6. Do not assume unsupported market statistics are true.
+7. The final recommendation must agree with the verdict.
+8. If the evidence is insufficient to make a confident decision, explain
+   the uncertainty and state what must be validated before investing.
+
+EVIDENCE AND DECISION QUALITY RULES:
+
+1. Do not claim that a market is growing, competition is limited,
+   or an opportunity exists unless supported by the provided evidence.
+   If evidence is missing, explicitly state that it is unknown.
+
+2. Do not recommend expensive infrastructure or expansion when the user
+   has a limited budget. Prefer low-cost validation before investment.
+
+3. Make the verdict depend on concrete viability conditions:
+   customer demand, restaurant willingness to partner, contribution
+   margin per order, delivery cost, customer acquisition cost,
+   and repeat orders.
+
+4. For CONDITIONAL GO, state measurable conditions that must be met
+   before committing significant capital. Do not invent numerical
+   targets when the available evidence cannot justify them.
+
+5. Every recommendation must address a specific risk in the original
+   question. Avoid generic advice such as "conduct market research"
+   unless you specify what must be validated and how.
+
+6. Distinguish facts supplied by the user, evidence from documents,
+   and assumptions. Never present assumptions as established facts.
+   
+ACTIONABLE DECISION REQUIREMENTS:
+- Convert each major risk into a practical test, the metric to measure, and how the result should affect the decision.
+- Prioritize small, low-cost pilot tests before hiring staff, expanding operations, or making major investments.
+- Explicitly respect the user's stated constraints, including limited budget and no heavy discounts.
+- Define the conditions under which the recommendation should change from CONDITIONAL GO to GO or NO-GO.
+- Do not invent market statistics, numerical targets, or evidence that was not provided or retrieved.
+- Avoid generic recommendations such as "conduct thorough market research" unless you specify exactly what to investigate and how.
+- Keep the response specific to the user's business and avoid repeating the same risk across multiple sections.
+SPECIFICITY REQUIREMENTS:
+
+- Do not merely repeat that more research is needed.
+- For every major risk, specify what the founder should measure,
+  how to validate it, and how the result affects the decision.
+- Prioritize low-cost tests before significant investment.
+- Address the user's stated constraints, especially the limited budget
+  and inability to offer heavy discounts.
+- Avoid introducing new risks, such as regulatory hurdles, unless
+  they are relevant and supported by the scenario or evidence.
+- Give at least three concrete decision criteria, but do not invent
+  numerical thresholds without supporting evidence.
+- Keep the final answer focused on this specific business.
+
+OUTPUT FORMAT:
+The first line must be: VERDICT: GO, NO-GO, or CONDITIONAL GO
+The second line must be: CONFIDENCE: [0-100]%
+
+Then provide these sections:
 DECIDING FACTOR:
-The lack of specific market validation, scalable unit economics, and sustainable financial planning for the proposed venture.
-
 REASONING:
-While general market growth is positive, it does not outweigh the severe execution risks without verified local demand. The plan relies on first-mover advantage rather than sustainable unit economics and adequate cash runway.
-
 STRONGEST OPPOSING POINT:
-The market growth trends offer potential upside if local operational challenges can be resolved.
-
 UNRESOLVED BLIND SPOTS:
-1. Lack of verified demand data for the target customer segment.
-2. Unclear unit economics and customer acquisition costs.
-3. Insufficient cash runway to reach profitability.
-
 NEXT ACTION:
-Conduct direct customer interviews and build a 12-month unit economics model before committing capital."""
-    
-    user = f"""Question: {question}
 
-Round 1 FOR: {r1_for}
+Do not output a historical case summary or a second, conflicting verdict.
+Do not call the decision a "success" or "failure"; evaluate whether the
+user should proceed with the proposed decision."""
 
-Round 1 AGAINST: {r1_against}
+    user = f"""ORIGINAL BUSINESS QUESTION:
+{question}
 
-Blind spots identified: {blind_spots}
+ROUND 1 — FOR:
+{r1_for}
 
-Round 2 FOR: {r2_for}
+ROUND 1 — AGAINST:
+{r1_against}
 
-Round 2 AGAINST: {r2_against}
+BLIND SPOTS:
+{blind_spots}
 
-Knowledge base evidence:
-{context}
+ROUND 2 — FOR:
+{r2_for}
 
-Give your definitive verdict following the exact format above."""
-    
+ROUND 2 — AGAINST:
+{r2_against}
+
+Evaluate the original business question only. Give one consistent verdict
+and a recommendation that agrees with it."""
+
     raw_response = call_llm(system, user)
     return clean_and_ensure_verdict(raw_response)
