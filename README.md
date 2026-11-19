@@ -51,11 +51,11 @@ SecondOpinion-LangG/
 ├── evaluate_model.py             # Evaluation split preparation, metrics calculation & benchmark runner
 ├── requirements.txt              # Project dependencies
 ├── README.md                     # Documentation
-│
 ├── knowledge_base/               # Knowledge base documents and datasets
 │   ├── entrepreneurial_decisions.json
 │   └── food_delivery.txt
-│
+├── evaluate_model.py             # Evaluation split preparation, metrics calculation & benchmark runner
+├── plot_results.py               # Generates confusion matrix, calibration, and runtime plots
 └── evaluation/                   # Evaluation dataset splits and output reports
     ├── eval_cases.json
     ├── knowledge_base_train/
@@ -68,8 +68,8 @@ SecondOpinion-LangG/
 
 ### 1. Clone the repository
 ```bash
-git clone https://github.com/AgamjotSingh21/SecondOpinion-LangG.git
-cd SecondOpinion-LangG
+git clone https://github.com/AgamjotSingh21/Sec-Op-Final-NoFE.git
+cd Sec-Op-Final-NoFE
 ```
 
 ### 2. Create and activate a virtual environment
@@ -281,7 +281,7 @@ This qualitative analysis is reported separately from the coded benchmark metric
 
 ### 10. Evaluation Limitations
 
-The benchmark measures agreement with verdict labels derived from historical outcomes. Historical business success or failure may depend on factors that are not
+The benchmark measures agreement with verdict labels derived from historical outcomes. Historical business success or failure may depend on factors that are not captured in the dataset, such as execution quality, timing, team dynamics, or macroeconomic shifts.
 
 
 ## 📋 Verdict Output Format
