@@ -1,8 +1,28 @@
-venv/ 
-__pycache__/ 
-*.pyc 
+# Virtual Environments
+.venv/
+venv/
+env/
+ENV/
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Environment variables
 .env
+
+# OS generated files
 desktop.ini
+.DS_Store
+Thumbs.db
+
+# Databases & local storage
 chroma_db/
 chroma_db_eval/
-__pycache__/
+
+# Node / JavaScript
+node_modules/
+dist/
+.npm/
+
