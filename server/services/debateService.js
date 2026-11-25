@@ -5,38 +5,105 @@ function formatCurrentTime() {
   return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: true });
 }
 
-// Call Ollama local LLM model (Llama 3)
-async function callOllama(systemPrompt, userPrompt, numPredict = 300) {
-  try {
-    const res = await fetch('http://127.0.0.1:11434/api/generate', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model: 'llama3',
-        prompt: `${systemPrompt}\n\n${userPrompt}`,
-        stream: false,
-        options: {
-          temperature: 0.7,
-          num_predict: numPredict
-        }
-      }),
-      signal: AbortSignal.timeout(90000) // 90 seconds timeout for local LLM inference
-    });
+const OLLAMA_URL = process.env.OLLAMA_URL || 'http://127.0.0.1:11434';
+let resolvedModel = process.env.OLLAMA_MODEL || null;
 
-    if (!res.ok) {
-      console.warn(`[Ollama] HTTP ${res.status}: ${res.statusText}`);
-      return null;
-    }
+async function resolveModel() {
+  if (resolvedModel) return resolvedModel;
 
-    const data = await res.json();
-    if (data && data.response) {
-      return data.response.trim();
-    }
-    return null;
-  } catch (err) {
-    console.warn(`[Ollama] Inference notice: ${err.message}`);
-    return null;
+  const res = await fetch(`${OLLAMA_URL}/api/tags`, {
+    signal: AbortSignal.timeout(8000)
+  });
+  if (!res.ok) {
+    throw new Error(`Ollama is not reachable at ${OLLAMA_URL} (HTTP ${res.status}). Start it with: ollama serve`);
   }
+
+  const data = await res.json();
+  const names = (data.models || []).map(model => model.name).filter(Boolean);
+  const preferred = names.find(name => name.startsWith('llama3'))
+    || names.find(name => name.startsWith('llama'))
+    || names[0];
+
+  if (!preferred) {
+    throw new Error('Ollama is running, but no model is installed. Pull one with: ollama pull llama3');
+  }
+
+  resolvedModel = preferred;
+  console.log(`[Ollama] Using model ${resolvedModel}`);
+  return resolvedModel;
+}
+
+// Call the local Ollama model. Throws if the model cannot answer — never substitutes canned text.
+async function callOllama(systemPrompt, userPrompt, numPredict = 300) {
+  const model = await resolveModel();
+  const res = await fetch(`${OLLAMA_URL}/api/chat`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      model,
+      stream: false,
+      messages: [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: userPrompt }
+      ],
+      options: {
+        temperature: 0.7,
+        num_predict: numPredict
+      }
+    }),
+    signal: AbortSignal.timeout(180000)
+  });
+
+  if (!res.ok) {
+    const body = await res.text();
+    throw new Error(`Ollama ${model} failed (HTTP ${res.status}): ${body.slice(0, 240)}`);
+  }
+
+  const data = await res.json();
+  const text = data?.message?.content || data?.response || '';
+  if (!text.trim()) {
+    throw new Error(`Ollama ${model} returned an empty response`);
+  }
+  return text.trim();
+}
+
+function makeTitle(question) {
+  let title = question.trim();
+  if (title.length > 48) {
+    title = title.substring(0, 45).trim() + '...';
+  }
+  if (!title.endsWith('?')) {
+    title += '?';
+  }
+  return title;
+}
+
+function recentDebateContext(chat) {
+  const messages = (chat?.rounds || [])
+    .flatMap(round => round.messages || [])
+    .filter(message => message.sender !== 'user')
+    .slice(-6);
+  if (messages.length === 0) return '';
+  return messages
+    .map(message => `${message.senderLabel}: ${(message.text || '').slice(0, 500)}`)
+    .join('\n\n');
+}
+
+function enforceNoGoForIllegalActivity(verdict, question, agentResponses = []) {
+  const questionText = question;
+  const responseText = agentResponses.join('\n');
+  const explicitlyIllegal = /\b(illegal|unlawful|against the law|criminal activity|illegal activity|illegal business)\b/i.test(questionText);
+  const illicitConduct = /\b(smuggl(?:e|ing)|counterfeit(?:ing)?|money laundering|tax evasion|evade taxes|brib(?:e|ery)|fraud(?:ulent)?|scam(?:ming)?|traffick(?:ing)?|sell stolen goods|trade stolen goods|drug trafficking)\b/i.test(questionText);
+  const modelRefusal = /\b(?:cannot|can't|unable to|won't)\s+(?:provide|give|assist with|help with)[^.!?]{0,100}\b(?:illegal|illicit|criminal|unlawful)\b/i.test(responseText);
+
+  if (!explicitlyIllegal && !illicitConduct && !modelRefusal) return verdict;
+
+  return {
+    verdict: 'NO-GO',
+    confidence: 95,
+    reasoning: 'The proposal involves illegal activity. The recommendation is NO-GO because proceeding could expose people to serious legal and financial consequences.',
+    nextAction: 'Do not proceed with the illegal activity; seek qualified legal advice about lawful alternatives.'
+  };
 }
 
 // Parse structured Judge output from Ollama or fallback
@@ -83,82 +150,47 @@ function parseJudgeVerdict(rawText, fallbackVerdict, fallbackConf, fallbackReaso
   return { verdict, confidence, reasoning, nextAction };
 }
 
-// Tailored baseline synthesis if Ollama is offline
-function synthesizeDebate(question) {
-  const cleanQ = question.trim();
-
-  let title = cleanQ;
-  if (title.length > 30) {
-    title = title.substring(0, 27).trim() + '...';
-  }
-  if (!title.endsWith('?')) {
-    title += '?';
-  }
-
-  const isCafe = /chai|tea|cafe|coffee|restaurant|bakery|food/i.test(cleanQ);
-  const isStartup = /startup|saas|co-founder|product|app|build|scale/i.test(cleanQ);
-  const isFinance = /invest|crypto|stock|mutual fund|real estate|buy|gold|market/i.test(cleanQ);
-
-  let r1For = `This represents an impactful commercial opportunity with clear market tailwinds [Doc 1].\nBy committing early, you establish authentic customer trust and capture first-mover market share [Doc 3].\nIterative execution allows you to refine your offering with real feedback while expanding long-term earnings potential [Doc 1].`;
-  let r1Against = `This is a high-risk transition with immediate exposure to overhead, fixed operational costs, and unforeseen regulatory delays [Doc 2].\nEarly customer acquisition metrics in this sector are volatile, and burn rate can rapidly outstrip incoming cash flow [Doc 4].\nExiting stability without validated unit economics puts personal solvency at severe risk [Doc 2].`;
-  let blindSpots = `Blind spots found:\n1. Do you possess a validated 6–12 month financial reserve dedicated strictly to personal runway?\n2. What is your verified cost-per-acquisition (CAC) and customer retention rate in this market?\n3. Do you have a contingency shutdown trigger if product-market fit is not reached in 6 months?`;
-  let r2For = `If you establish a 6-month buffer and test initial demand through a localized, low-capital pilot or pre-launch cohort, you de-risk the transition while preserving upside.`;
-  let r2Against = `Even structured pilots require non-trivial bandwidth. Balancing dual responsibilities frequently leads to execution burnout, while fixed overhead continues accruing.`;
-  
-  let verdict = 'CONDITIONAL GO';
-  let confidence = 70;
-  let reasoning = 'The strategic upside is attractive, but execution risks demand strict gating behind pilot metrics before full commitment.';
-  let nextAction = 'Launch a focused 45-day validation test before committing capital.';
-
-  if (isCafe) {
-    r1For = "This can be a great move if you're passionate about food and community spaces.\nChandigarh has a strong café culture with growing demand for unique, local concepts [Doc 1].\nYou can start small, build a loyal customer base, and scale gradually [Doc 3].\nIt also gives you more control and long-term earning potential [Doc 1].";
-    r1Against = "It's a high-risk move to leave a stable job, especially with fixed costs like rent, staff, and licenses.\nCafé businesses have a high failure rate in the first 1–2 years [Doc 2].\nIncome can be uncertain and seasonal, which may affect your financial stability [Doc 4].\nIt's safer to test the idea part-time before fully quitting [Doc 2].";
-    blindSpots = "Blind spots found:\n1. Do you have enough savings to cover at least 6–12 months of personal and business expenses?\n2. Have you validated the demand (location, target customers, and pricing) in Chandigarh?\n3. Do you have prior experience or a clear plan to handle operations (staff, supply, compliance)?";
-    r2For = "If you have 6–12 months of savings and run a small pilot (e.g., a weekend stall or pop-up), you can validate demand, learn operations, and reduce risk before going full-time.";
-    r2Against = "Even with a pilot, be realistic about time and effort. Running a café needs consistent hands-on involvement, and it can distract from your current job and financial goals.";
-    verdict = 'CONDITIONAL GO';
-    confidence = 68;
-    reasoning = 'The opportunity is promising, but the risks are real and can be managed through a low-risk test.';
-    nextAction = 'Test with a weekend stall for 60 days.';
-  } else if (isStartup) {
-    r1For = `Joining or founding early gives unconstrained learning velocity and high equity leverage [Doc 1].\nModern software tooling drastically lowers initial deployment capital, letting small teams out-execute incumbents [Doc 3].`;
-    r1Against = `Over 70% of tech startups suffer severe runway crunches within 18 months [Doc 2].\nDilution, founder misalignment, and sluggish sales cycles frequently trap key personnel without tangible liquidity [Doc 4].`;
-    blindSpots = `Blind spots found:\n1. What is the verified cash runway in months at current monthly burn?\n2. Are vesting schedules and founder equity allocations protected by standard IP assignment?\n3. Have at least 10 non-affiliate customers committed intent to pay?`;
-    r2For = `Securing 18 months of runway and pre-sales commitments mitigates downside while preserving exponential equity upside.`;
-    r2Against = `Current macro tech hiring makes re-entry expensive if the venture folds after burning personal savings.`;
-    verdict = 'CONDITIONAL GO';
-    confidence = 75;
-    reasoning = 'The team and opportunity show high promise, but equity terms and financial runway must be formally verified.';
-    nextAction = 'Audit audited bank runway and review cap table before signing.';
-  } else if (isFinance) {
-    r1For = `DCA and index allocation systematically outperform cash over 5+ year horizons [Doc 1].\nInflation guarantees continuous purchasing power decay for uninvested capital.`;
-    r1Against = `Purchasing at cyclically elevated valuations increases near-term drawdown vulnerability by up to 25% [Doc 2].\nBehavioral panic selling during drawdowns causes permanent capital impairment.`;
-    blindSpots = `Blind spots found:\n1. What is your mandatory capital withdrawal date?\n2. Can you withstand a 20% drawdown without liquidating?\n3. Have you set aside a separate 6-month liquid emergency fund?`;
-    r2For = `Staggering deployments over a 6 to 12-month STP protects capital against volatility while maintaining equity market participation.`;
-    r2Against = `Maintaining cash buffer in risk-free yield provides peace of mind and dry powder for broader market pullbacks.`;
-    verdict = 'GO';
-    confidence = 82;
-    reasoning = 'Disciplined staggered allocation effectively eliminates valuation timing anxiety for long-term investors.';
-    nextAction = 'Set up a weekly STP schedule over 24 weeks.';
-  }
-
-  return { title, r1For, r1Against, blindSpots, r2For, r2Against, verdict, confidence, reasoning, nextAction };
-}
-
 // Stream the live debate (supports both initial debates and continuing follow-up questions in the SAME chat!)
 export async function streamDebate(question, user, sendEvent, chatId = null) {
   const cleanQ = question.trim();
   const time = formatCurrentTime();
-  const synth = synthesizeDebate(cleanQ);
   const resolvedUserId = user?.id || (typeof user === 'string' ? user : 'guest');
   const userInitial = user?.avatarInitial || (user?.name ? user.name[0].toUpperCase() : 'M');
 
   let activeChat = null;
+  let continuing = false;
 
-  // Check if this is a follow-up continuing in an existing chat!
+  // Follow-ups must stay on the chat the client already opened.
   if (chatId) {
     activeChat = await ChatStore.getById(chatId, resolvedUserId);
+    continuing = Boolean(activeChat && (activeChat.rounds?.length || 0) > 0);
+    if (!continuing) {
+      throw new Error(`Chat ${chatId} could not be found for this account. Refresh your chat list and try again.`);
+    }
   }
+
+  if (!activeChat) {
+    activeChat = {
+      id: 'chat-' + Date.now(),
+      userId: resolvedUserId,
+      title: makeTitle(cleanQ),
+      question: cleanQ,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      rounds: []
+    };
+    await ChatStore.save(activeChat);
+    console.log(`[Debate] Starting chat ${activeChat.id} for user ${resolvedUserId}`);
+  } else {
+    console.log(`[Debate] Continuing chat ${activeChat.id} for user ${resolvedUserId}`);
+  }
+
+  // Tell the client the real id before any model call, so the next message stays in this chat.
+  sendEvent('chat_started', {
+    chatId: activeChat.id,
+    title: activeChat.title,
+    question: activeChat.question
+  });
 
   const userMessage = {
     id: `msg-${Date.now()}-user`,
@@ -173,8 +205,7 @@ export async function streamDebate(question, user, sendEvent, chatId = null) {
   /* ==========================================================================
      CASE A: CONTINUING AN EXISTING CHAT (FOLLOW-UP QUESTION)
      ========================================================================== */
-  if (activeChat) {
-    console.log(`[Debate] Continuing existing chat ${activeChat.id} for user ${resolvedUserId}`);
+  if (continuing) {
     const nextRoundNum = (activeChat.rounds?.length || 0) + 1;
 
     const followUpRound = {
@@ -200,12 +231,10 @@ export async function streamDebate(question, user, sendEvent, chatId = null) {
       message: 'FOR Agent is analyzing advantages of this follow-up idea...'
     });
 
-    const forSystem = "You are a passionate startup advocate. The founder is exploring a follow-up idea for their decision. Defend this follow-up angle with confidence and clear benefits. Keep under 120 words.";
-    const forUser = `Original Decision: ${activeChat.question}\nFollow-up question: ${cleanQ}`;
-    let forText = await callOllama(forSystem, forUser, 200);
-    if (!forText) {
-      forText = `This follow-up approach directly addresses initial friction. By adapting your strategy with this angle, you reduce upfront exposure while capturing validation quickly.`;
-    }
+    const priorContext = recentDebateContext(activeChat);
+    const forSystem = "You are a passionate startup advocate. The founder is continuing the same decision chat. Defend this follow-up angle with confidence and clear benefits. Keep under 120 words. Stay on this decision.";
+    const forUser = `Original Decision: ${activeChat.question}\n\nPrevious debate:\n${priorContext || '(none yet)'}\n\nFollow-up question: ${cleanQ}`;
+    const forText = await callOllama(forSystem, forUser, 200);
 
     const msgFor = {
       id: `msg-${Date.now()}-r${nextRoundNum}for`,
@@ -227,12 +256,9 @@ export async function streamDebate(question, user, sendEvent, chatId = null) {
       message: 'AGAINST Agent is identifying risks and hidden flaws in this follow-up...'
     });
 
-    const againstSystem = "You are a ruthless devil's advocate. Scrutinize the founder's follow-up idea. Point out practical operational hurdles, costs, or distractions. Keep under 120 words.";
-    const againstUser = `Original Decision: ${activeChat.question}\nFollow-up question: ${cleanQ}\nAdvocate claims: ${forText}`;
-    let againstText = await callOllama(againstSystem, againstUser, 200);
-    if (!againstText) {
-      againstText = `Be cautious: this alternative still introduces logistical complexity and time division. It might create a false sense of security without solving unit economics.`;
-    }
+    const againstSystem = "You are a ruthless devil's advocate. Scrutinize the founder's follow-up in the same decision chat. Point out practical operational hurdles, costs, or distractions. Keep under 120 words.";
+    const againstUser = `Original Decision: ${activeChat.question}\n\nPrevious debate:\n${priorContext || '(none yet)'}\n\nFollow-up question: ${cleanQ}\nAdvocate claims: ${forText}`;
+    const againstText = await callOllama(againstSystem, againstUser, 200);
 
     const msgAgainst = {
       id: `msg-${Date.now()}-r${nextRoundNum}against`,
@@ -256,6 +282,7 @@ export async function streamDebate(question, user, sendEvent, chatId = null) {
 
     const judgeSystem = `You are the final Judge evaluating an entrepreneurial dilemma.
 Evaluate the follow-up proposal in context of the original decision.
+If the proposal involves illegal activity, you MUST return NO-GO with confidence of at least 95%. Do not recommend proceeding with illegal activity.
 You MUST output strictly in this format:
 VERDICT: [Choose one: GO, NO-GO, or CONDITIONAL GO]
 CONFIDENCE: [Number between 0 and 100]%
@@ -263,14 +290,15 @@ REASONING: [1-2 sentences]
 NEXT ACTION: [1 concrete, practical step]`;
 
     const judgeUser = `Original Question: ${activeChat.question}\nFollow-up Question: ${cleanQ}\nFOR: ${forText}\nAGAINST: ${againstText}`;
-    let judgeRaw = await callOllama(judgeSystem, judgeUser, 180);
-    const judgeData = parseJudgeVerdict(
+    const judgeRaw = await callOllama(judgeSystem, judgeUser, 220);
+    const parsedJudgeData = parseJudgeVerdict(
       judgeRaw,
-      synth.verdict,
-      synth.confidence,
-      synth.reasoning,
-      synth.nextAction
+      'CONDITIONAL GO',
+      60,
+      judgeRaw,
+      'Use the reasoning above to pick the next concrete step.'
     );
+    const judgeData = enforceNoGoForIllegalActivity(parsedJudgeData, `${activeChat.question}\n${cleanQ}`, [forText, againstText, judgeRaw]);
 
     const msgJudge = {
       id: `msg-${Date.now()}-r${nextRoundNum}judge`,
@@ -299,18 +327,7 @@ NEXT ACTION: [1 concrete, practical step]`;
   /* ==========================================================================
      CASE B: STARTING A NEW DEBATE CHAT
      ========================================================================== */
-  const newChatId = 'chat-' + Date.now();
-  console.log(`[Debate] Starting brand new chat ${newChatId} for user ${resolvedUserId}`);
-
-  const finalChat = {
-    id: newChatId,
-    userId: resolvedUserId,
-    title: synth.title,
-    question: cleanQ,
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
-    rounds: []
-  };
+  const finalChat = activeChat;
 
   const round1 = {
     id: 'round-1',
@@ -331,7 +348,7 @@ NEXT ACTION: [1 concrete, practical step]`;
   // 1. Initial retrieval status
   sendEvent('status', {
     stage: 'retrieval',
-    message: 'Searching ChromaDB knowledge base (5,001 startup decision cases)...'
+    message: 'Asking the local Llama 3 model for both sides of this decision...'
   });
 
   // 2. Round 1 Start
@@ -349,8 +366,7 @@ NEXT ACTION: [1 concrete, practical step]`;
   });
 
   const r1ForSystem = "You are a passionate startup advocate. Argue strongly FOR the decision with clear reasoning and commercial advantages. Do not mention metadata fields. Keep under 130 words.";
-  let forText = await callOllama(r1ForSystem, `Decision: ${cleanQ}`, 220);
-  if (!forText) forText = synth.r1For;
+  const forText = await callOllama(r1ForSystem, `Decision: ${cleanQ}`, 220);
 
   const msgFor1 = {
     id: `msg-${Date.now()}-r1for`,
@@ -373,8 +389,7 @@ NEXT ACTION: [1 concrete, practical step]`;
   });
 
   const r1AgainstSystem = "You are a ruthless devil's advocate. Argue strongly AGAINST the decision. Attack overhead, customer acquisition hurdles, and failure risks. Keep under 130 words.";
-  let againstText = await callOllama(r1AgainstSystem, `Decision: ${cleanQ}`, 220);
-  if (!againstText) againstText = synth.r1Against;
+  const againstText = await callOllama(r1AgainstSystem, `Decision: ${cleanQ}`, 220);
 
   const msgAgainst1 = {
     id: `msg-${Date.now()}-r1against`,
@@ -397,8 +412,7 @@ NEXT ACTION: [1 concrete, practical step]`;
   });
 
   const qSystem = "You are an expert at identifying blind spots in startup decisions. Analyze both arguments and generate exactly 3 sharp follow-up questions exposing critical gaps.";
-  let qText = await callOllama(qSystem, `Question: ${cleanQ}\nFOR: ${forText}\nAGAINST: ${againstText}`, 200);
-  if (!qText) qText = synth.blindSpots;
+  const qText = await callOllama(qSystem, `Question: ${cleanQ}\nFOR: ${forText}\nAGAINST: ${againstText}`, 200);
 
   const msgQ1 = {
     id: `msg-${Date.now()}-r1q`,
@@ -428,8 +442,7 @@ NEXT ACTION: [1 concrete, practical step]`;
   });
 
   const r2ForSystem = "You are the startup advocate in Round 2. Defend the decision against the blind spots by proposing a low-risk pilot, phased rollout, or validation milestone. Keep under 120 words.";
-  let for2Text = await callOllama(r2ForSystem, `Question: ${cleanQ}\nBlind spots: ${qText}`, 200);
-  if (!for2Text) for2Text = synth.r2For;
+  const for2Text = await callOllama(r2ForSystem, `Question: ${cleanQ}\nBlind spots: ${qText}`, 200);
 
   const msgFor2 = {
     id: `msg-${Date.now()}-r2for`,
@@ -452,8 +465,7 @@ NEXT ACTION: [1 concrete, practical step]`;
   });
 
   const r2AgainstSystem = "You are the devil's advocate in Round 2. Attack the defense by pressing hard on execution reality, distraction from existing priorities, and hidden overhead. Keep under 120 words.";
-  let against2Text = await callOllama(r2AgainstSystem, `Question: ${cleanQ}\nBlind spots: ${qText}\nDefense: ${for2Text}`, 200);
-  if (!against2Text) against2Text = synth.r2Against;
+  const against2Text = await callOllama(r2AgainstSystem, `Question: ${cleanQ}\nBlind spots: ${qText}\nDefense: ${for2Text}`, 200);
 
   const msgAgainst2 = {
     id: `msg-${Date.now()}-r2against`,
@@ -477,6 +489,7 @@ NEXT ACTION: [1 concrete, practical step]`;
 
   const judgeSystem = `You are the final Judge evaluating an entrepreneurial decision.
 Evaluate all debate arguments and render a definitive verdict.
+If the proposal involves illegal activity, you MUST return NO-GO with confidence of at least 95%. Do not recommend proceeding with illegal activity.
 You MUST output strictly in this format:
 VERDICT: [Choose one: GO, NO-GO, or CONDITIONAL GO]
 CONFIDENCE: [Number between 0 and 100]%
@@ -484,14 +497,15 @@ REASONING: [1-2 sentences]
 NEXT ACTION: [1 actionable next step]`;
 
   const judgeUser = `Original Decision: ${cleanQ}\nRound 1 FOR: ${forText}\nRound 1 AGAINST: ${againstText}\nBlind spots: ${qText}\nRound 2 Defense: ${for2Text}\nRound 2 Attack: ${against2Text}`;
-  let judgeRaw = await callOllama(judgeSystem, judgeUser, 180);
-  const judgeData = parseJudgeVerdict(
+  const judgeRaw = await callOllama(judgeSystem, judgeUser, 280);
+  const parsedJudgeData = parseJudgeVerdict(
     judgeRaw,
-    synth.verdict,
-    synth.confidence,
-    synth.reasoning,
-    synth.nextAction
+    'CONDITIONAL GO',
+    60,
+    judgeRaw,
+    'Use the reasoning above to pick the next concrete step.'
   );
+  const judgeData = enforceNoGoForIllegalActivity(parsedJudgeData, cleanQ, [forText, againstText, qText, for2Text, against2Text, judgeRaw]);
 
   const msgJudge = {
     id: `msg-${Date.now()}-r2judge`,
@@ -516,4 +530,8 @@ NEXT ACTION: [1 actionable next step]`;
   });
 
   return finalChat;
+}
+
+export async function seedInitialDataIfNeeded() {
+  return;
 }

@@ -110,6 +110,33 @@ Run the interactive CLI:
 python main.py
 ```
 
+## 🌐 Running the Dashboard
+
+The dashboard calls the Node API, and the API sends every debate response to the configured Ollama model. It does not use canned responses. Install Node.js 18 or newer and Ollama, then open three PowerShell terminals from the project root:
+
+```powershell
+# Terminal 1: start Ollama and make sure the model is installed
+ollama serve
+```
+
+```powershell
+# Terminal 2: install and start the API
+cd server
+npm install
+npm run dev
+```
+
+```powershell
+# Terminal 3: install and start the dashboard
+cd client
+npm install
+npm run dev
+```
+
+Open http://localhost:3000. Sign in with the seeded demo account (`demo@secondopinion.ai` / `password123`) or register an account. In another terminal, run `ollama pull llama3` once if the model is not installed. The server automatically chooses an installed Llama model; set `OLLAMA_MODEL` and optionally `OLLAMA_URL` in the server environment to select a different Ollama model or host. If Ollama is unavailable, the dashboard displays the connection error instead of substituting a canned answer.
+
+The dashboard is independent of the Python CLI setup above. MongoDB is optional; if it is unavailable, the API stores accounts and chats in `server/data/`.
+
 ### Example Question:
 > *Should I start a food delivery startup in Ludhiana?*
 

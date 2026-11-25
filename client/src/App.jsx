@@ -42,6 +42,9 @@ export default function App() {
   const [showUserMenu, setShowUserMenu] = useState(false);
 
   const chatBottomRef = useRef(null);
+  const chatIdRef = useRef(null);
+  const chatLoadRequestRef = useRef(0);
+  const debatingRef = useRef(false);
 
   // Fetch chats for the current user whenever user or token changes
   useEffect(() => {
@@ -53,12 +56,13 @@ export default function App() {
     }
   }, [currentUser, token]);
 
-  // When activeChatId changes, fetch the specific chat details
+  // When the user opens a different past chat, load it.
+  // Skip while a debate is streaming so a refresh cannot wipe live model replies.
   useEffect(() => {
-    if (activeChatId && token) {
+    if (activeChatId && token && !debatingRef.current) {
       fetchChatDetails(activeChatId);
     }
-  }, [activeChatId]);
+  }, [activeChatId, token]);
 
   // Auto-scroll when messages update or status changes
   useEffect(() => {
@@ -82,12 +86,14 @@ export default function App() {
   }
 
   async function fetchChatDetails(id) {
+    const requestId = ++chatLoadRequestRef.current;
     try {
       setLoading(true);
       const headers = token ? { Authorization: `Bearer ${token}` } : {};
       const res = await fetch(`/api/chats/${id}`, { headers });
       const data = await res.json();
-      if (data.success) {
+      if (data.success && requestId === chatLoadRequestRef.current && activeChatId === id && !debatingRef.current) {
+        chatIdRef.current = data.chat.id;
         setCurrentChat(data.chat);
       }
     } catch (err) {
@@ -98,16 +104,27 @@ export default function App() {
   }
 
   function handleNewChat() {
+    if (isDebating) return;
+    chatLoadRequestRef.current += 1;
+    chatIdRef.current = null;
     setActiveChatId(null);
     setCurrentChat(null);
     setInputText('');
   }
 
+  function handleSelectChat(id) {
+    if (isDebating) return;
+    chatLoadRequestRef.current += 1;
+    chatIdRef.current = id;
+    setCurrentChat(null);
+    setActiveChatId(id);
+  }
+
   /* ==========================================================================
-     Real-Time Live Debate Execution Flow (SSE)
-     Supports both initial debates and continuing follow-up questions in the SAME chat!
+     Real-Time Live Debate Execution Flow
+     One request per send. Follow-ups reuse the chat id from chat_started.
      ========================================================================== */
-  function handleSendMessage(e) {
+  async function handleSendMessage(e) {
     if (e) e.preventDefault();
     const query = inputText.trim();
     if (!query || isDebating) return;
@@ -120,11 +137,12 @@ export default function App() {
     }
 
     setInputText('');
+    debatingRef.current = true;
     setIsDebating(true);
     setActiveAgentStatus({
       agent: 'system',
       label: 'Debate Engine',
-      message: 'Running multi-agent debate with Llama 3 & ChromaDB...'
+      message: 'Asking Llama 3...'
     });
 
     const userInitial = currentUser?.avatarInitial || 'M';
@@ -138,12 +156,11 @@ export default function App() {
       timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: true })
     };
 
-    // Check if continuing an existing chat or starting fresh:
-    const isContinuingChat = Boolean(currentChat && currentChat.id && currentChat.id !== 'active-debate');
-    const existingChatId = isContinuingChat ? currentChat.id : null;
+    const knownChatId = (currentChat?.id && currentChat.id !== 'active-debate')
+      ? currentChat.id
+      : (chatIdRef.current && chatIdRef.current !== 'active-debate' ? chatIdRef.current : null);
 
-    if (isContinuingChat) {
-      // Append user message into the existing chat under a new round
+    if (knownChatId) {
       const nextRoundNum = (currentChat.rounds?.length || 0) + 1;
       const newRound = {
         id: `temp-round-${nextRoundNum}`,
@@ -153,10 +170,11 @@ export default function App() {
       };
       setCurrentChat(prev => ({
         ...prev,
+        id: knownChatId,
         rounds: [...(prev?.rounds || []), newRound]
       }));
     } else {
-      // Starting a brand new chat
+      chatIdRef.current = null;
       const initialRounds = [
         {
           id: 'round-1',
@@ -173,99 +191,158 @@ export default function App() {
       });
     }
 
-    // Pass chatId if continuing an existing chat!
-    const encodedQ = encodeURIComponent(query);
-    const encodedToken = encodeURIComponent(token);
-    let sseUrl = `/api/debate/stream?question=${encodedQ}&token=${encodedToken}`;
-    if (existingChatId) {
-      sseUrl += `&chatId=${encodeURIComponent(existingChatId)}`;
-    }
+    const params = new URLSearchParams({ question: query, token });
+    if (knownChatId) params.set('chatId', knownChatId);
 
-    const eventSource = new EventSource(sseUrl);
-
-    eventSource.addEventListener('status', (e) => {
-      const data = JSON.parse(e.data);
-      setActiveAgentStatus({
-        agent: 'system',
-        label: 'Knowledge Base',
-        message: data.message
-      });
-    });
-
-    eventSource.addEventListener('round_start', (e) => {
-      const data = JSON.parse(e.data);
-      setCurrentChat(prev => {
-        if (!prev) return prev;
-        const rounds = [...(prev.rounds || [])];
-        const existingIdx = rounds.findIndex(r => r.roundNumber === data.roundNumber);
-        if (existingIdx >= 0) {
-          rounds[existingIdx] = { ...rounds[existingIdx], title: data.title };
-        } else {
-          rounds.push({
-            id: `round-${data.roundNumber}`,
-            roundNumber: data.roundNumber,
-            title: data.title,
-            messages: []
-          });
-        }
-        return { ...prev, rounds };
-      });
-    });
-
-    eventSource.addEventListener('agent_thinking', (e) => {
-      const data = JSON.parse(e.data);
-      setActiveAgentStatus({
-        agent: data.agent,
-        label: data.label,
-        message: data.message
-      });
-    });
-
-    eventSource.addEventListener('agent_message', (e) => {
-      const data = JSON.parse(e.data);
-      setCurrentChat(prev => {
-        if (!prev) return prev;
-        const rounds = [...(prev.rounds || [])];
-        let targetRound = rounds.find(r => r.roundNumber === data.roundNumber);
-        if (!targetRound) {
-          targetRound = {
-            id: `round-${data.roundNumber}`,
-            roundNumber: data.roundNumber,
-            title: `Round ${data.roundNumber}`,
-            messages: []
-          };
-          rounds.push(targetRound);
-        }
-
-        // Avoid duplicate messages
-        if (!targetRound.messages.some(m => m.id === data.message.id)) {
-          targetRound.messages = [...targetRound.messages, data.message];
-        }
-
-        return { ...prev, rounds };
-      });
-    });
-
-    eventSource.addEventListener('complete', (e) => {
-      const data = JSON.parse(e.data);
-      if (data.chat) {
-        setCurrentChat(data.chat);
-        setActiveChatId(data.chat.id);
+    const applyEvent = (event, data) => {
+      if (event === 'chat_started' && data.chatId) {
+        chatIdRef.current = data.chatId;
+        setActiveChatId(data.chatId);
+        setCurrentChat(prev => prev ? {
+          ...prev,
+          id: data.chatId,
+          title: data.title || prev.title,
+          question: data.question || prev.question
+        } : prev);
+        return;
       }
-      setIsDebating(false);
-      setActiveAgentStatus(null);
-      eventSource.close();
-      // Refresh user's past chats list
-      fetchChats();
-    });
 
-    eventSource.addEventListener('error', (e) => {
-      console.error('SSE Error:', e);
+      if (event === 'status') {
+        setActiveAgentStatus({
+          agent: 'system',
+          label: 'Llama 3',
+          message: data.message
+        });
+        return;
+      }
+
+      if (event === 'round_start') {
+        setCurrentChat(prev => {
+          if (!prev) return prev;
+          const rounds = [...(prev.rounds || [])];
+          const existingIdx = rounds.findIndex(r => r.roundNumber === data.roundNumber);
+          if (existingIdx >= 0) {
+            rounds[existingIdx] = { ...rounds[existingIdx], title: data.title };
+          } else {
+            rounds.push({
+              id: `round-${data.roundNumber}`,
+              roundNumber: data.roundNumber,
+              title: data.title,
+              messages: []
+            });
+          }
+          return { ...prev, rounds };
+        });
+        return;
+      }
+
+      if (event === 'agent_thinking') {
+        setActiveAgentStatus({
+          agent: data.agent,
+          label: data.label,
+          message: data.message
+        });
+        return;
+      }
+
+      if (event === 'agent_message') {
+        setCurrentChat(prev => {
+          if (!prev) return prev;
+          const rounds = (prev.rounds || []).map(round => ({ ...round, messages: [...(round.messages || [])] }));
+          let targetRound = rounds.find(r => r.roundNumber === data.roundNumber);
+          if (!targetRound) {
+            targetRound = {
+              id: `round-${data.roundNumber}`,
+              roundNumber: data.roundNumber,
+              title: `Round ${data.roundNumber}`,
+              messages: []
+            };
+            rounds.push(targetRound);
+          }
+          if (!targetRound.messages.some(m => m.id === data.message.id)) {
+            targetRound.messages.push(data.message);
+          }
+          return { ...prev, rounds };
+        });
+        return;
+      }
+
+      if (event === 'complete') {
+        if (data.chat) {
+          chatIdRef.current = data.chat.id;
+          setCurrentChat(data.chat);
+          setActiveChatId(data.chat.id);
+        }
+        debatingRef.current = false;
+        setIsDebating(false);
+        setActiveAgentStatus(null);
+        fetchChats();
+        return;
+      }
+
+      if (event === 'error') {
+        const message = data.message || 'The model did not return a response.';
+        setCurrentChat(prev => {
+          if (!prev) return prev;
+          const rounds = (prev.rounds || []).map(round => ({ ...round, messages: [...(round.messages || [])] }));
+          const target = rounds[rounds.length - 1];
+          if (target && !target.messages.some(m => m.id === 'model-error')) {
+            target.messages.push({
+              id: 'model-error',
+              sender: 'judge',
+              senderLabel: 'Debate Engine',
+              avatarText: '!',
+              color: 'purple',
+              text: message,
+              timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: true })
+            });
+          }
+          return { ...prev, rounds };
+        });
+        debatingRef.current = false;
+        setIsDebating(false);
+        setActiveAgentStatus(null);
+      }
+    };
+
+    try {
+      const res = await fetch(`/api/debate/stream?${params.toString()}`, {
+        headers: { Accept: 'text/event-stream' }
+      });
+      if (!res.ok || !res.body) {
+        const detail = await res.text();
+        throw new Error(detail || `Debate request failed (${res.status})`);
+      }
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const blocks = buffer.split('\n\n');
+        buffer = blocks.pop() || '';
+        for (const block of blocks) {
+          if (!block.trim()) continue;
+          let eventName = 'message';
+          const dataLines = [];
+          for (const line of block.split('\n')) {
+            if (line.startsWith('event:')) eventName = line.slice(6).trim();
+            else if (line.startsWith('data:')) dataLines.push(line.slice(5).trim());
+          }
+          if (dataLines.length === 0) continue;
+          applyEvent(eventName, JSON.parse(dataLines.join('\n')));
+        }
+      }
+    } catch (err) {
+      console.error('Debate stream failed:', err);
+      applyEvent('error', { message: err.message || 'Could not reach the model.' });
+    } finally {
+      debatingRef.current = false;
       setIsDebating(false);
-      setActiveAgentStatus(null);
-      eventSource.close();
-      fetchChats();
-    });
+    }
   }
 
   /* ==========================================================================
@@ -295,6 +372,7 @@ export default function App() {
       setShowAuthModal(false);
       setAuthForm({ name: '', email: '', password: '' });
       // Reset current chat view for new account
+      chatIdRef.current = null;
       setCurrentChat(null);
       setActiveChatId(null);
     } catch (err) {
@@ -317,6 +395,7 @@ export default function App() {
           localStorage.setItem('secondopinion_token', data.token);
           localStorage.setItem('secondopinion_user', JSON.stringify(data.user));
           setShowAuthModal(false);
+          chatIdRef.current = null;
           setCurrentChat(null);
           setActiveChatId(null);
         }
@@ -324,6 +403,8 @@ export default function App() {
   }
 
   function handleLogout() {
+    chatLoadRequestRef.current += 1;
+    chatIdRef.current = null;
     setCurrentUser(null);
     setToken('');
     setChats([]);
@@ -441,7 +522,7 @@ export default function App() {
       <div className="main-layout">
         {/* Left Sidebar */}
         <aside className="sidebar">
-          <button className="new-chat-btn" onClick={handleNewChat}>
+          <button className="new-chat-btn" onClick={handleNewChat} disabled={isDebating}>
             <Plus size={18} strokeWidth={2.5} />
             <span>New Chat</span>
           </button>
@@ -469,7 +550,7 @@ export default function App() {
                     <div
                       key={chat.id}
                       className={`past-chat-item ${isActive ? 'active' : ''}`}
-                      onClick={() => setActiveChatId(chat.id)}
+                      onClick={() => handleSelectChat(chat.id)}
                     >
                       <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className="chat-item-icon">
                         <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
