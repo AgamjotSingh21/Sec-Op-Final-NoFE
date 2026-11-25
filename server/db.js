@@ -147,29 +147,30 @@ export const ChatStore = {
   },
 
   async save(chat) {
-    chat.updatedAt = new Date().toISOString();
-    if (!chat.createdAt) {
-      chat.createdAt = chat.updatedAt;
+    const { _id, __v, ...clean } = chat;
+    clean.updatedAt = new Date().toISOString();
+    if (!clean.createdAt) {
+      clean.createdAt = clean.updatedAt;
     }
 
     if (isMongoConnected) {
       await ChatModel.findOneAndUpdate(
-        { id: chat.id },
-        chat,
+        { id: clean.id },
+        clean,
         { upsert: true, new: true, runValidators: true }
       );
-      return chat;
+      return clean;
     }
 
     const list = readJsonFile(CHATS_FILE);
-    const idx = list.findIndex(c => c.id === chat.id);
+    const idx = list.findIndex(c => c.id === clean.id);
     if (idx >= 0) {
-      list[idx] = chat;
+      list[idx] = clean;
     } else {
-      list.push(chat);
+      list.push(clean);
     }
     writeJsonFile(CHATS_FILE, list);
-    return chat;
+    return clean;
   },
 
   async delete(id, userId = null) {
